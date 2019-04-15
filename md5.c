@@ -89,6 +89,12 @@ d=II(b,c,d,a,M9,21,0xeb86d391)
 */
 #include <memory.h>
 #include "md5.h" 
+
+/*
+用于bits填充的缓冲区，为什么要64个字节呢？因为当欲加密的信息的bits数被512除其余数为448时，
+需要填充的bits的最大值为512=64*8 。
+*/
+
 unsigned char PADDING[]={
                 0x80,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
                    0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
@@ -97,6 +103,7 @@ unsigned char PADDING[]={
 
 void MD5Init(MD5_CTX *context)
 {     
+     /*将当前的有效信息的长度设成0,这个很简单,还没有有效信息,长度当然是0了*/
      context->count[0] = 0;
      context->count[1] = 0;
      context->state[0] = 0x67452301;
@@ -104,19 +111,48 @@ void MD5Init(MD5_CTX *context)
      context->state[2] = 0x98BADCFE;
      context->state[3] = 0x10325476;
 }
+
+/* MD5 block update operation. Continues an MD5 message-digest
+   operation, processing another message block, and updating the
+   context. */
+/*将与加密的信息传递给md5结构，可以多次调用
+context：初始化过了的md5结构
+input：欲加密的信息，可以任意长
+inputLen：指定input的长度
+*/
 void MD5Update(MD5_CTX *context,unsigned char *input,unsigned int inputlen)
 {
     unsigned int i = 0,index = 0,partlen = 0;
+
+    /* Compute number of bytes mod 64 */
+    /*计算已有信息的bits长度的字节数的模64, 64bytes=512bits。
+    用于判断已有信息加上当前传过来的信息的总长度能不能达到512bits，
+    如果能够达到则对凑够的512bits进行一次处理*/
     index = (context->count[0] >> 3) & 0x3F;
+
+    /*计算已有的字节数长度还差多少字节可以 凑成64的整倍数*/
     partlen = 64 - index;
+
+    /* Update number of bits *//*更新已有信息的bits长度*/
     context->count[0] += inputlen << 3;
     if(context->count[0] < (inputlen << 3))
        context->count[1]++;
     context->count[1] += inputlen >> 29;
+
+    /* Transform as many times as possible.*/
+    /*如果当前输入的字节数 大于 已有字节数长度补足64字节整倍数所差的字节数*/
     if(inputlen >= partlen)
     {
+        /*用当前输入的内容把context->buffer的内容补足512bits*/
        memcpy(&context->buffer[index],input,partlen);
+
+       /*用基本函数对填充满的512bits（已经保存到context->buffer中） 做一次转换，转换结果保存到context->state中*/
        MD5Transform(context->state,context->buffer);
+
+       /*
+        对当前输入的剩余字节做转换（如果剩余的字节<在输入的input缓冲区中>大于512bits的话 ），
+        转换结果保存到context->state中
+        */
        for(i = partlen;i+64 <= inputlen;i+=64)
            MD5Transform(context->state,&input[i]);
        index = 0;
@@ -125,19 +161,56 @@ void MD5Update(MD5_CTX *context,unsigned char *input,unsigned int inputlen)
     {
         i = 0;
     }
+
+    /* Buffer remaining input */
+    /*将输入缓冲区中的不足填充满512bits的剩余内容填充到context->buffer中，留待以后再作处理*/
     memcpy(&context->buffer[index],&input[i],inputlen-i);
 }
+
+/* MD5 finalization. Ends an MD5 message-digest operation, writing the
+   the message digest and zeroizing the context. */
+/*获取加密 的最终结果
+digest：保存最终的加密串
+context：你前面初始化并填入了信息的md5结构
+*/
 void MD5Final(MD5_CTX *context,unsigned char digest[16])
 {
     unsigned int index = 0,padlen = 0;
     unsigned char bits[8];
+
+    /* Pad out to 56 mod 64. */
+    /* 计算所有的bits长度的字节数的模64, 64bytes=512bits*/
     index = (context->count[0] >> 3) & 0x3F;
+
+    /*计算需要填充的字节数，padLen的取值范围在1-64之间*/
     padlen = (index < 56)?(56-index):(120-index);
+
+    /* Save number of bits */
+    /*将要被转换的信息(所有的)的bits长度拷贝到bits中*/
     MD5Encode(bits,context->count,8);
+
+    /*这一次函数调用绝对不会再导致MD5Transform的被调用，因为这一次不会填满512bits*/
     MD5Update(context,PADDING,padlen);
+
+    /* Append length (before padding) */
+    /*补上原始信息的bits长度（bits长度固定的用64bits表示），这一次能够恰巧凑够512bits，不会多也不会少*/
     MD5Update(context,bits,8);
+
+    /* Store state in digest */
+    /*将最终的结果保存到digest中。ok，终于大功告成了*/
     MD5Encode(digest,context->state,16);
+
+    /* Zeroize sensitive information. 
+    R_memset((POINTER)context, 0, sizeof(*context));*/
 }
+
+/* Encodes input (UINT4) into output (unsigned char). Assumes len is
+   a multiple of 4. */
+/*将4字节的整数copy到字符形式的缓冲区中
+output：用于输出的字符缓冲区
+input：欲转换的四字节的整数形式的数组
+len：output缓冲区的长度，要求是4的整数倍
+*/
 void MD5Encode(unsigned char *output,unsigned int *input,unsigned int len)
 {
     unsigned int i = 0,j = 0;
@@ -151,6 +224,14 @@ void MD5Encode(unsigned char *output,unsigned int *input,unsigned int len)
          j+=4;
     }
 }
+
+/* Decodes input (unsigned char) into output (UINT4). Assumes len is
+   a multiple of 4. */
+/*与上面的函数正好相反，这一个把字符形式的缓冲区中的数据copy到4字节的整数中（即以整数形式保存）
+output：保存转换出的整数
+input：欲转换的字符缓冲区
+len：输入的字符缓冲区的长度，要求是4的整数倍
+*/
 void MD5Decode(unsigned int *output,unsigned char *input,unsigned int len)
 {
      unsigned int i = 0,j = 0;
@@ -161,6 +242,13 @@ void MD5Decode(unsigned int *output,unsigned char *input,unsigned int len)
            j+=4;
       }
 }
+
+/* MD5 basic transformation. Transforms state based on block. */
+/*
+对512bits信息(即block缓冲区)进行一次处理，每次处理包括四轮
+state[4]：md5结构中的state[4]，用于保存对512bits信息加密的中间结果或者最终结果
+block[64]：欲加密的512bits信息
+*/
 void MD5Transform(unsigned int state[4],unsigned char block[64])
 {
      unsigned int a = state[0];
